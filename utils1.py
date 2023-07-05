@@ -1,10 +1,11 @@
-# import subprocess
-# def install_library(library_name):
-#     subprocess.check_call(['pip', 'install', library_name])
+import subprocess
+def install_library(library_name):
+    subprocess.check_call(['pip', 'install', library_name])
     
-# # Usage
-# install_library('feature_engine')
+# Usage
+install_library('feature_engine')
 
+from operator import index
 from statsmodels.tsa.seasonal import STL
 from feature_engine.outliers import Winsorizer
 from feature_engine.encoding import OneHotEncoder
@@ -13,8 +14,8 @@ import numpy as np
 from statsmodels.tsa.stattools import adfuller
 from scipy.fft import fft, fftfreq
 from statsmodels.tsa.stattools import pacf
-
-
+from numpy.fft import rfft, irfft, rfftfreq
+import statsmodels as sm
 
 
 def constantIdentifier(df,input_cols,constant_features):
@@ -71,91 +72,75 @@ def outlier_capper(X,cappers):
 
 
 # stationarity check
-def get_diff(data):
+def get_diff(data,target):
     diff=[]
-    columns=data.select_dtypes(include="number").columns.tolist()
-    for column in columns:
-        trial=0
-        values = data[column].values.tolist()
-        cleanedList = [x for x in values if str(x) != 'nan']
-        result = adfuller(cleanedList)
-        # Extract the p-value from the test result
-        p_value = result[1]
-        for i in range(1, 4):
-            #print(column,trial,p_value)
-            if p_value < 0.05:
-                diff.append(trial)
+    column= target
+    
+    trial=0
+    values = data[column].values.tolist()
+    cleanedList = [x for x in values if str(x) != 'nan']
+    result = adfuller(cleanedList)
+    # Extract the p-value from the test result
+    p_value = result[1]
+    for i in range(1, 4):
+        #print(column,trial,p_value)
+        if p_value < 0.05:
+            diff.append(trial)
+            break
+        else:
+            if trial==2:
+                diff.append(0)
                 break
-            else:
-                if trial==2:
-                    diff.append(0)
-                    break
-                data[column] = data[column].diff(1)
-                values = data[column].values.tolist()
-                cleanedList = [x for x in values if str(x) != 'nan']
-                result = adfuller(cleanedList)
-                p_value = result[1]
-                trial+=1
-    return columns,diff
+            data[column] = data[column].diff(1)
+            values = data[column].values.tolist()
+            cleanedList = [x for x in values if str(x) != 'nan']
+            result = adfuller(cleanedList)
+            p_value = result[1]
+            trial+=1
+    return column,diff
 
 
 
 
 # stationarity (applying difference)
-def apply_diff(data,diff,columns):
+def apply_diff(data,diff,column):
         
     #print(diff,columns)
-    for i in range(len(columns)):
-        data[f"{columns[i]}_found"]=data[columns[i]]
-        for j in range(diff[i]):
-            data[f"{columns[i]}_found"] = data[f"{columns[i]}_found"].diff(1)
+
+    data[f"{column}_found"]=data[column]
+    for j in range(diff[0]):
+          data[f"{column}_found"] = data[f"{column}_found"].diff(1)
     return data
 
 
 
 
+def detect_seasonality(df, target_column):
 
-def fourier_series_features_creator(time_series , time , n,num_terms,significant_periods):
+    # Ensure the DataFrame index is a valid date/time index
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("DataFrame index must be a DatetimeIndex.")
 
-    # Generate Fourier series features
-    fourier_series_features = np.zeros((n, num_terms * len(significant_periods) * 2))
-    for i, period in enumerate(significant_periods):
-        for j in range(num_terms):
-            coefficient_sin = np.sin(2 * np.pi * (j + 1) * time / period)
-            coefficient_cos = np.cos(2 * np.pi * (j + 1) * time / period)
-            fourier_series_features[:, i * num_terms + j] = coefficient_sin
-            fourier_series_features[:, i * num_terms + j + num_terms] = coefficient_cos
-    return fourier_series_features
+    # Decompose the time series to capture seasonality
+    decomposition = sm.tsa.seasonal.seasonal_decompose(df[target_column], model='additive', extrapolate_trend='freq')
 
+    # Test if the residuals exhibit any seasonality
+    seasonal_component = decomposition.seasonal
+    mean_seasonality = np.mean(seasonal_component)
+    is_additive = np.allclose(seasonal_component, mean_seasonality, atol=1e-3)
 
-
-
-
-
-def get_stationarity(X,target,power_threshold,length_threshold,):
-    time_series = X[target]
-    time = X[target].rank(method='dense').astype(int)
-
-    # Linear detrend
-    detrended_series = time_series.values.astype("float") - np.polyval(np.polyfit(time, time_series.values.astype("float"), 1), time)
-
-    # Compute the periodogram with boxcar window and spectrum scaling
-    n = len(detrended_series)
-    power_spectrum = np.abs(fft(detrended_series * np.hanning(n)))**2 / n
-
-    # Apply power threshold and length threshold
-    significant_indices = np.where(power_spectrum > self.power_threshold)[0][1:]
-    significant_periods = 1 / fftfreq(n)[significant_indices]
-    self.significant_periods = significant_periods[np.where(significant_periods > self.length_threshold)[0]]
-
-    self.fourier_series_features_creator(time_series, time, n)
-
-    # Create DataFrame for Fourier series features
-    self.feature_columns = [f'Feature_{i+1}' for i in range(self.fourier_series_features.shape[1])]
-    self.fourier_df = pd.DataFrame(self.fourier_series_features, columns=self.feature_columns)
+    # Determine the seasonality type
+    if is_additive:
+        return "additive"
+    else:
+        return "multiplicative"
 
 
-    
+def preprocess_seasonality(df,target_column,seasonality_type="additive"):
+    if seasonality_type == "multiplicative":
+        df[target_column] = np.log(df[target_column])     
+    df = df.reset_index() 
+    return df   
     
     
 def oheesimate(X):
@@ -211,60 +196,29 @@ def lagger_apply(X,sig_fet):
 
         
 
-def fourier_series_features_creator(time, num_terms, significant_periods , n):
-    # Generate Fourier series features
-    fourier_series_features = np.zeros((n, num_terms * len(significant_periods) * 2))
-    for i, period in enumerate(significant_periods):
-        for j in range(num_terms):
-            coefficient_sin = np.sin(2 * np.pi * (j + 1) * time / period)
-            coefficient_cos = np.cos(2 * np.pi * (j + 1) * time / period)
-            fourier_series_features[:, i * num_terms + j] = coefficient_sin
-            fourier_series_features[:, i * num_terms + j + num_terms] = coefficient_cos
-    return fourier_series_features
 
 
 
+def fourier_features(time, freq, order):
+    k = 2 * np.pi * (1 / freq) * time
+    features = {}
+    for i in range(1, (order + 1)):
+        features.update({
+            f"sin_{freq}_{i}": np.sin(i * k),
+            f"cos_{freq}_{i}": np.cos(i * k),
+        })
+    return pd.DataFrame(features)
+    
 
-def seasonality_fit(X , target,power_threshold, length_threshold, num_terms):
-    # Assuming you have an existing DataFrame named X
-    time_series = X[target]
-    time = X[target].rank(method='dense').astype(int)
 
-    # Linear detrend
-    detrended_series = time_series.values.astype("float") - np.polyval(
-                        np.polyfit(time, time_series.values.astype("float"), 1), time)
+def seasonality_transform(X,freq):
 
-    # Compute the periodogram with boxcar window and spectrum scaling
-    n = len(detrended_series)
-    power_spectrum = np.abs(fft(detrended_series * np.hanning(n))) ** 2 / n
+    time = X['ordered'].values
 
-    # Apply power threshold and length threshold
-    significant_indices = np.where(power_spectrum > power_threshold)[0][1:]
-    significant_periods = 1 / fftfreq(n)[significant_indices]
-    significant_periods = significant_periods[np.where(significant_periods > length_threshold)[0]]
-
-    fourier_series_features = fourier_series_features_creator(time, num_terms, significant_periods, n)
+    fourier_series_features = fourier_features(time, freq,6)
 
     # Create DataFrame for Fourier series features
-    feature_columns = [f'Feature_{i + 1}' for i in range(fourier_series_features.shape[1])]
-
-    return significant_periods, feature_columns
-
-
-
-
-
-
-
-def seasonality_transform(X, target,significant_periods, feature_columns,num_terms ):
-    # Assuming you have an existing DataFrame named X
-    time_series = X[target]
-    time = X[target].rank(method='dense').astype(int)
-
-    fourier_series_features = fourier_series_features_creator(time, num_terms, significant_periods, len(X))
-
-    # Create DataFrame for Fourier series features
-    fourier_df = pd.DataFrame(fourier_series_features, columns=feature_columns ).set_index(X.index)
+    fourier_df = fourier_series_features.set_index(X.index)
 
     # Concatenate the input DataFrame and Fourier series DataFrame
     combined_df = pd.concat([X, fourier_df], axis=1)
@@ -272,7 +226,12 @@ def seasonality_transform(X, target,significant_periods, feature_columns,num_ter
 
 
 
-
+def check_log(df,target_column,seasonality_type="additive"):
+    if seasonality_type == "multiplicative":
+        df[target_column] = np.exp(df[target_column])
+        df['prediction'] = np.exp(df['prediction'])
+    
+    return df 
 
         
         
